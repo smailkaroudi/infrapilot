@@ -140,9 +140,6 @@ prompt_app_config() {
     prompt_input "Repository URL (HTTPS, e.g., https://github.com/user/repo.git): " "" false "REPO_URL"
     [[ -z "$REPO_URL" ]] && { log_error "Repository URL is required"; exit 1; }
     
-    # Remove username from URL if present (we'll add it via token)
-    REPO_URL=$(echo "$REPO_URL" | sed 's|https://[^@]*@|https://|')
-    
     if [[ "$REPO_URL" == git@* ]] || [[ "$REPO_URL" == ssh://* ]]; then
         log_error "SSH URLs are not supported. Please use HTTPS URL."
         exit 1
@@ -152,6 +149,15 @@ prompt_app_config() {
     if [[ ! "$REPO_URL" =~ ^https:// ]]; then
         log_error "Repository URL must start with https://"
         exit 1
+    fi
+    
+    # Extract username from URL if present
+    if [[ "$REPO_URL" =~ ^https://([^@]+)@ ]]; then
+        EXTRACTED_USERNAME="${BASH_REMATCH[1]}"
+        # Store extracted username for later use with token
+        if [[ -z "$GIT_USERNAME" ]]; then
+            GIT_USERNAME="$EXTRACTED_USERNAME"
+        fi
     fi
     
     prompt_input "Branch: " "main" false "BRANCH"
@@ -346,37 +352,53 @@ prepare_repo_url() {
     local repo_url="$1"
     local auth_url="$repo_url"
     
-    # Remove any existing credentials from URL
-    auth_url=$(echo "$auth_url" | sed 's|https://[^@]*@|https://|')
-    
-    if [[ -n "$GIT_TOKEN" ]]; then
-        # For Bitbucket, token format is: x-token-auth:TOKEN
-        # For GitHub/GitLab, token can be used directly
-        if [[ "$repo_url" =~ ^https://([^/]+)/(.+)$ ]]; then
-            local domain="${BASH_REMATCH[1]}"
-            local path="${BASH_REMATCH[2]}"
-            # Remove .git suffix if present for path manipulation
-            path=$(echo "$path" | sed 's|\.git$||')
-            # Bitbucket format: https://x-token-auth:TOKEN@bitbucket.org/workspace/repo.git
-            if [[ "$domain" == *"bitbucket.org"* ]] || [[ "$domain" == *"bitbucket"* ]]; then
+    # Extract domain and path from URL (may include username)
+    if [[ "$repo_url" =~ ^https://([^/]+)/(.+)$ ]]; then
+        local domain_with_user="${BASH_REMATCH[1]}"
+        local path="${BASH_REMATCH[2]}"
+        
+        # Extract username and domain
+        local username=""
+        local domain=""
+        if [[ "$domain_with_user" =~ ^([^@]+)@(.+)$ ]]; then
+            username="${BASH_REMATCH[1]}"
+            domain="${BASH_REMATCH[2]}"
+        else
+            domain="$domain_with_user"
+        fi
+        
+        # Remove .git suffix if present for path manipulation
+        path=$(echo "$path" | sed 's|\.git$||')
+        
+        if [[ -n "$GIT_TOKEN" ]]; then
+            # Token provided - use it for authentication
+            if [[ -n "$username" ]]; then
+                # If username is in URL, use username:token format (Bitbucket App Password style)
+                auth_url="https://${username}:${GIT_TOKEN}@${domain}/${path}.git"
+            elif [[ "$domain" == *"bitbucket.org"* ]] || [[ "$domain" == *"bitbucket"* ]]; then
+                # Bitbucket without username in URL - use x-token-auth format
                 auth_url="https://x-token-auth:${GIT_TOKEN}@${domain}/${path}.git"
             else
                 # GitHub/GitLab format: https://TOKEN@domain/path.git
                 auth_url="https://${GIT_TOKEN}@${domain}/${path}.git"
             fi
-        fi
-    elif [[ -n "$GIT_USERNAME" ]] && [[ -n "$GIT_PASSWORD" ]]; then
-        if [[ "$repo_url" =~ ^https://([^/]+)/(.+)$ ]]; then
-            local domain="${BASH_REMATCH[1]}"
-            local path="${BASH_REMATCH[2]}"
-            path=$(echo "$path" | sed 's|\.git$||')
+        elif [[ -n "$GIT_USERNAME" ]] && [[ -n "$GIT_PASSWORD" ]]; then
+            # Use provided username and password
             auth_url="https://${GIT_USERNAME}:${GIT_PASSWORD}@${domain}/${path}.git"
+        elif [[ -n "$username" ]]; then
+            # URL has username but no credentials provided - keep as-is
+            # Git will prompt for password if needed
+            if [[ ! "$auth_url" =~ \.git$ ]]; then
+                auth_url="${auth_url}.git"
+            fi
+            echo "$auth_url"
+            return 0
         fi
-    fi
-    
-    # Ensure .git suffix
-    if [[ ! "$auth_url" =~ \.git$ ]]; then
-        auth_url="${auth_url}.git"
+        
+        # Ensure .git suffix
+        if [[ ! "$auth_url" =~ \.git$ ]]; then
+            auth_url="${auth_url}.git"
+        fi
     fi
     
     echo "$auth_url"
