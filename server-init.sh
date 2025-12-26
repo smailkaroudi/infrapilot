@@ -140,8 +140,17 @@ prompt_app_config() {
     prompt_input "Repository URL (HTTPS, e.g., https://github.com/user/repo.git): " "" false "REPO_URL"
     [[ -z "$REPO_URL" ]] && { log_error "Repository URL is required"; exit 1; }
     
+    # Remove username from URL if present (we'll add it via token)
+    REPO_URL=$(echo "$REPO_URL" | sed 's|https://[^@]*@|https://|')
+    
     if [[ "$REPO_URL" == git@* ]] || [[ "$REPO_URL" == ssh://* ]]; then
         log_error "SSH URLs are not supported. Please use HTTPS URL."
+        exit 1
+    fi
+    
+    # Validate URL format
+    if [[ ! "$REPO_URL" =~ ^https:// ]]; then
+        log_error "Repository URL must start with https://"
         exit 1
     fi
     
@@ -149,6 +158,15 @@ prompt_app_config() {
     
     prompt_input "Domain URL (e.g., app.example.com): " "" false "DOMAIN_URL"
     [[ -z "$DOMAIN_URL" ]] && { log_error "Domain URL is required"; exit 1; }
+    
+    # Remove protocol and path if user included them
+    DOMAIN_URL=$(echo "$DOMAIN_URL" | sed 's|^https://||' | sed 's|^http://||' | sed 's|/.*||')
+    
+    # Validate domain format (basic check)
+    if [[ "$DOMAIN_URL" =~ / ]]; then
+        log_warn "Domain URL should not include paths. Using only domain: ${DOMAIN_URL%%/*}"
+        DOMAIN_URL="${DOMAIN_URL%%/*}"
+    fi
     
     prompt_input "Docker Image Name (e.g., myapp): " "$APP_NAME" false "IMAGE_NAME"
     [[ -z "$IMAGE_NAME" ]] && IMAGE_NAME="$APP_NAME"
@@ -328,18 +346,37 @@ prepare_repo_url() {
     local repo_url="$1"
     local auth_url="$repo_url"
     
+    # Remove any existing credentials from URL
+    auth_url=$(echo "$auth_url" | sed 's|https://[^@]*@|https://|')
+    
     if [[ -n "$GIT_TOKEN" ]]; then
+        # For Bitbucket, token format is: x-token-auth:TOKEN
+        # For GitHub/GitLab, token can be used directly
         if [[ "$repo_url" =~ ^https://([^/]+)/(.+)$ ]]; then
             local domain="${BASH_REMATCH[1]}"
             local path="${BASH_REMATCH[2]}"
-            auth_url="https://${GIT_TOKEN}@${domain}/${path}"
+            # Remove .git suffix if present for path manipulation
+            path=$(echo "$path" | sed 's|\.git$||')
+            # Bitbucket format: https://x-token-auth:TOKEN@bitbucket.org/workspace/repo.git
+            if [[ "$domain" == *"bitbucket.org"* ]] || [[ "$domain" == *"bitbucket"* ]]; then
+                auth_url="https://x-token-auth:${GIT_TOKEN}@${domain}/${path}.git"
+            else
+                # GitHub/GitLab format: https://TOKEN@domain/path.git
+                auth_url="https://${GIT_TOKEN}@${domain}/${path}.git"
+            fi
         fi
     elif [[ -n "$GIT_USERNAME" ]] && [[ -n "$GIT_PASSWORD" ]]; then
         if [[ "$repo_url" =~ ^https://([^/]+)/(.+)$ ]]; then
             local domain="${BASH_REMATCH[1]}"
             local path="${BASH_REMATCH[2]}"
-            auth_url="https://${GIT_USERNAME}:${GIT_PASSWORD}@${domain}/${path}"
+            path=$(echo "$path" | sed 's|\.git$||')
+            auth_url="https://${GIT_USERNAME}:${GIT_PASSWORD}@${domain}/${path}.git"
         fi
+    fi
+    
+    # Ensure .git suffix
+    if [[ ! "$auth_url" =~ \.git$ ]]; then
+        auth_url="${auth_url}.git"
     fi
     
     echo "$auth_url"
