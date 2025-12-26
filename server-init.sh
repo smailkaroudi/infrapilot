@@ -89,10 +89,10 @@ prompt_input() {
     
     local input=""
     if [[ "$is_secret" == "true" ]]; then
-        read -sp "$prompt_text${default_value:+ [default: $default_value]}${default_value:+]: }" input
+        read -sp "$prompt_text${default_value:+ [default: $default_value]}${default_value:+]: }" input < /dev/tty
         echo ""
     else
-        read -p "$prompt_text${default_value:+ [default: $default_value]}${default_value:+]: }" input
+        read -p "$prompt_text${default_value:+ [default: $default_value]}${default_value:+]: }" input < /dev/tty
     fi
     
     if [[ -z "$input" ]] && [[ -n "$default_value" ]]; then
@@ -112,7 +112,7 @@ prompt_git_credentials() {
         echo "  1) Personal Access Token (Recommended)"
         echo "  2) Username and Password"
         echo "  3) Skip (will try without credentials)"
-        read -p "Enter choice [1-3]: " auth_choice
+        read -p "Enter choice [1-3]: " auth_choice < /dev/tty
         
         case "$auth_choice" in
             1)
@@ -164,7 +164,7 @@ prompt_app_config() {
     echo "  1) prod (Production)"
     echo "  2) staging (Staging)"
     echo "  3) dev (Development)"
-    read -p "Select environment [1-3, default: prod]: " env_choice
+    read -p "Select environment [1-3, default: prod]: " env_choice < /dev/tty
     case "$env_choice" in
         1|"") ENV="prod" ;;
         2) ENV="staging" ;;
@@ -185,7 +185,7 @@ prompt_app_config() {
     echo ""
     
     while true; do
-        read -p "Environment variable (KEY=VALUE or 'done' to finish): " env_var
+        read -p "Environment variable (KEY=VALUE or 'done' to finish): " env_var < /dev/tty
         if [[ "$env_var" == "done" ]] || [[ -z "$env_var" ]]; then
             break
         fi
@@ -217,7 +217,7 @@ prompt_app_config() {
     fi
     
     echo ""
-    read -p "Continue with deployment? [Y/n]: " confirm
+    read -p "Continue with deployment? [Y/n]: " confirm < /dev/tty
     if [[ "$confirm" =~ ^[Nn]$ ]]; then
         log_info "Deployment cancelled by user"
         exit 0
