@@ -55,26 +55,26 @@ log_error() {
 # ============================================================================
 
 check_root() {
-    if [[ $EUID -ne 0 ]]; then
-        log_error "This script must be run as root"
-        exit 1
-    fi
+if [[ $EUID -ne 0 ]]; then
+   log_error "This script must be run as root"
+   exit 1
+fi
 }
 
 check_os() {
-    if [[ ! -f /etc/os-release ]]; then
-        log_error "Cannot detect OS. This script supports Ubuntu/Debian only."
-        exit 1
-    fi
-    
-    . /etc/os-release
-    
-    if [[ "$ID" != "ubuntu" && "$ID" != "debian" ]]; then
-        log_error "This script supports Ubuntu/Debian only. Detected: $ID"
-        exit 1
-    fi
-    
-    log_info "Detected OS: $PRETTY_NAME"
+if [[ ! -f /etc/os-release ]]; then
+    log_error "Cannot detect OS. This script supports Ubuntu/Debian only."
+    exit 1
+fi
+
+. /etc/os-release
+
+if [[ "$ID" != "ubuntu" && "$ID" != "debian" ]]; then
+    log_error "This script supports Ubuntu/Debian only. Detected: $ID"
+    exit 1
+fi
+
+log_info "Detected OS: $PRETTY_NAME"
 }
 
 # ============================================================================
@@ -180,9 +180,9 @@ prompt_app_config() {
     prompt_input "Application Port: " "3000" false "APP_PORT"
     if ! [[ "$APP_PORT" =~ ^[0-9]+$ ]]; then
         log_error "Port must be a number"
-        exit 1
-    fi
-    
+    exit 1
+fi
+
     echo ""
     echo "Environment options:"
     echo "  1) prod (Production)"
@@ -253,23 +253,23 @@ prompt_app_config() {
 # ============================================================================
 
 setup_system_packages() {
-    log_info "Updating system packages..."
-    export DEBIAN_FRONTEND=noninteractive
-    apt-get update -qq
-    apt-get upgrade -y -qq
-    
-    log_info "Installing essential packages..."
-    apt-get install -y -qq \
-        curl \
-        wget \
-        git \
-        ca-certificates \
-        gnupg \
-        lsb-release \
-        apt-transport-https \
-        software-properties-common \
-        ufw \
-        jq
+log_info "Updating system packages..."
+export DEBIAN_FRONTEND=noninteractive
+apt-get update -qq
+apt-get upgrade -y -qq
+
+log_info "Installing essential packages..."
+apt-get install -y -qq \
+    curl \
+    wget \
+    git \
+    ca-certificates \
+    gnupg \
+    lsb-release \
+    apt-transport-https \
+    software-properties-common \
+    ufw \
+    jq
 }
 
 setup_docker() {
@@ -299,15 +299,15 @@ setup_docker() {
 }
 
 verify_docker_compose() {
-    if ! docker compose version &> /dev/null; then
-        log_error "Docker Compose is not available"
-        exit 1
-    fi
-    log_info "Docker Compose version: $(docker compose version)"
+if ! docker compose version &> /dev/null; then
+    log_error "Docker Compose is not available"
+    exit 1
+fi
+log_info "Docker Compose version: $(docker compose version)"
 }
 
 setup_firewall() {
-    log_info "Configuring UFW firewall..."
+log_info "Configuring UFW firewall..."
     if ! command -v ufw &> /dev/null; then
         log_warn "UFW not available, skipping firewall configuration"
         return 0
@@ -319,13 +319,13 @@ setup_firewall() {
         ufw allow 80/tcp comment 'HTTP' 2>/dev/null || true
         ufw allow 443/tcp comment 'HTTPS' 2>/dev/null || true
     else
-        ufw --force reset
-        ufw default deny incoming
-        ufw default allow outgoing
-        ufw allow 22/tcp comment 'SSH'
-        ufw allow 80/tcp comment 'HTTP'
-        ufw allow 443/tcp comment 'HTTPS'
-        ufw --force enable
+ufw --force reset
+ufw default deny incoming
+ufw default allow outgoing
+ufw allow 22/tcp comment 'SSH'
+ufw allow 80/tcp comment 'HTTP'
+ufw allow 443/tcp comment 'HTTPS'
+ufw --force enable
         log_info "Firewall configured: ports 22, 80, 443 allowed"
     fi
 }
@@ -418,8 +418,8 @@ clone_or_update_repo() {
     
     cd "$app_dir"
     
-    if [[ -d ".git" ]]; then
-        log_info "Repository exists, updating..."
+if [[ -d ".git" ]]; then
+    log_info "Repository exists, updating..."
         local current_remote=$(git remote get-url origin 2>/dev/null || echo "")
         local auth_url=$(prepare_repo_url "$repo_url")
         
@@ -435,19 +435,19 @@ clone_or_update_repo() {
         if git ls-remote --heads origin "$branch" | grep -q "$branch"; then
             git checkout "$branch" 2>/dev/null || git checkout -b "$branch" "origin/$branch"
             git reset --hard "origin/$branch"
-            git clean -fd
+    git clean -fd
             log_info "Repository updated to branch: $branch"
         else
             log_error "Branch $branch does not exist"
             exit 1
         fi
-    else
-        log_info "Cloning repository..."
+else
+    log_info "Cloning repository..."
         local auth_url=$(prepare_repo_url "$repo_url")
         GIT_TERMINAL_PROMPT=0 git clone -b "$branch" "$auth_url" . || {
-            log_error "Failed to clone repository"
-            exit 1
-        }
+        log_error "Failed to clone repository"
+        exit 1
+    }
         log_info "Repository cloned successfully"
     fi
 }
@@ -493,21 +493,19 @@ create_env_file() {
 # ============================================================================
 
 generate_docker_compose() {
-    local app_dir="$1"
+    local compose_dir="$1"
     local app_name="$2"
     local image_name="$3"
     local domain_url="$4"
     local app_port="$5"
     local acme_email="$6"
     
-    log_info "Generating docker-compose.yml..."
+    log_info "Generating docker-compose.yml in: $compose_dir"
     
     # Find an available port on host
     local host_port=$(find_available_port)
     
-    cat > "$app_dir/docker-compose.yml" << EOF
-version: '3.8'
-
+    cat > "$compose_dir/docker-compose.yml" << EOF
 services:
   ${app_name}:
     build:
@@ -520,30 +518,18 @@ services:
       - "${host_port}:${app_port}"
     env_file:
       - .env
-    environment:
-      - VIRTUAL_HOST=${domain_url}
-      - VIRTUAL_PORT=${app_port}
-      - LETSENCRYPT_HOST=${domain_url}
-      - LETSENCRYPT_EMAIL=${acme_email}
-    networks:
-      - nginx-proxy-network
     healthcheck:
       test: ["CMD-SHELL", "curl -f http://localhost:${app_port}/health || wget --no-verbose --tries=1 --spider http://localhost:${app_port}/health || exit 1"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 40s
-
-networks:
-  nginx-proxy-network:
-    external: true
-    name: nginx_nginx-proxy-network
 EOF
     
     # Store host port for Nginx config
-    echo "$host_port" > "$app_dir/.host_port"
+    echo "$host_port" > "$compose_dir/.host_port"
     
-    log_info "docker-compose.yml generated (host port: $host_port)"
+    log_info "docker-compose.yml generated in $compose_dir (host port: $host_port)"
 }
 
 find_available_port() {
@@ -572,12 +558,10 @@ setup_nginx_proxy() {
         return 0
     fi
     
-    log_info "Setting up Nginx reverse proxy with automatic SSL..."
+log_info "Setting up Nginx reverse proxy with automatic SSL..."
     mkdir -p "$deploy_dir/nginx"
-    
-    cat > "$deploy_dir/nginx/docker-compose.yml" << NGINX_COMPOSE
-version: '3.8'
 
+    cat > "$deploy_dir/nginx/docker-compose.yml" << NGINX_COMPOSE
 services:
   nginx-proxy:
     image: nginxproxy/nginx-proxy:latest
@@ -619,10 +603,10 @@ networks:
   nginx-proxy-network:
     driver: bridge
 NGINX_COMPOSE
-    
+
     mkdir -p "$deploy_dir/nginx"/{certs,vhost.d,html,conf.d,acme.sh}
-    
-    log_info "Starting Nginx reverse proxy..."
+
+log_info "Starting Nginx reverse proxy..."
     cd "$deploy_dir/nginx"
     
     if docker ps | grep -q nginx-proxy; then
@@ -652,12 +636,70 @@ get_nginx_network_name() {
     echo "$network_name"
 }
 
+stop_docker_nginx_proxy() {
+    log_info "Checking for Docker nginx-proxy containers..."
+    
+    local containers_stopped=false
+    
+    # First, disable restart policy to prevent containers from restarting
+    if docker ps --format "{{.Names}}" 2>/dev/null | grep -qE "^(nginx-proxy|nginx-proxy-acme)$"; then
+        log_info "Disabling restart policy for Docker nginx-proxy containers..."
+        docker update --restart=no nginx-proxy nginx-proxy-acme 2>/dev/null || true
+    fi
+    
+    # Try to stop via docker compose first (most reliable method)
+    if [[ -d "$DEPLOY_DIR/nginx" ]] && [[ -f "$DEPLOY_DIR/nginx/docker-compose.yml" ]]; then
+        log_info "Stopping Docker nginx-proxy via docker compose..."
+        cd "$DEPLOY_DIR/nginx"
+        docker compose down 2>/dev/null && containers_stopped=true
+        cd - > /dev/null
+    fi
+    
+    # Check and stop nginx-proxy containers by name (fallback)
+    if docker ps --format "{{.Names}}" 2>/dev/null | grep -qE "^(nginx-proxy|nginx-proxy-acme)$"; then
+        log_info "Stopping Docker nginx-proxy containers..."
+        docker stop nginx-proxy nginx-proxy-acme 2>/dev/null && containers_stopped=true
+    fi
+    
+    # Force remove containers if they still exist
+    if docker ps -a --format "{{.Names}}" 2>/dev/null | grep -qE "^(nginx-proxy|nginx-proxy-acme)$"; then
+        log_info "Force removing Docker nginx-proxy containers..."
+        docker rm -f nginx-proxy nginx-proxy-acme 2>/dev/null && containers_stopped=true
+    fi
+    
+    if [[ "$containers_stopped" == "true" ]]; then
+        log_info "Waiting for port 80 to be released..."
+        sleep 3
+    fi
+    
+    # Verify port 80 is free
+    if netstat -tuln 2>/dev/null | grep -q ":80 " || \
+       ss -tuln 2>/dev/null | grep -q ":80 "; then
+        log_warn "Port 80 is still in use. You may need to manually stop the service using port 80."
+        return 1
+    else
+        log_info "Port 80 is now available"
+        return 0
+    fi
+}
+
 setup_nginx_server_block() {
     local domain_url="$1"
     local host_port="$2"
     local app_name="$3"
     
     log_info "Creating Nginx server block for $domain_url..."
+    
+    # Stop Docker nginx-proxy if running (we're using traditional Nginx)
+    stop_docker_nginx_proxy || log_warn "Docker nginx-proxy may still be using port 80"
+    
+    # Check if port 80 is still in use
+    local port_80_in_use=false
+    if netstat -tuln 2>/dev/null | grep -q ":80 " || \
+       ss -tuln 2>/dev/null | grep -q ":80 "; then
+        port_80_in_use=true
+        log_warn "Port 80 is still in use after stopping Docker containers"
+    fi
     
     # Install Nginx if not installed
     if ! command -v nginx &> /dev/null; then
@@ -667,15 +709,23 @@ setup_nginx_server_block() {
         systemctl enable nginx
     fi
     
-    # Ensure Nginx is running
-    if ! systemctl is-active --quiet nginx; then
-        log_info "Starting Nginx service..."
-        systemctl start nginx
+    # Try to start Nginx only if port 80 is not in use
+    if [[ "$port_80_in_use" == "false" ]]; then
+        if ! systemctl is-active --quiet nginx; then
+            log_info "Starting Nginx service..."
+            if ! systemctl start nginx 2>/dev/null; then
+                log_warn "Could not start Nginx service (port 80 may be in use)"
+            fi
+        fi
+    else
+        log_warn "Skipping Nginx service start (port 80 is in use)"
+        log_info "Server block configuration will still be created"
     fi
     
-    # Create server block configuration
+    # Create server block configuration (always create, even if Nginx can't start yet)
     local config_file="/etc/nginx/sites-available/${app_name}"
     
+    log_info "Creating Nginx server block configuration: $config_file"
     cat > "$config_file" << NGINX_CONFIG
 server {
     listen 80;
@@ -691,19 +741,42 @@ server {
 }
 NGINX_CONFIG
     
+    log_info "Server block configuration created"
+    
     # Enable site
     if [[ ! -L "/etc/nginx/sites-enabled/${app_name}" ]]; then
         ln -s "$config_file" "/etc/nginx/sites-enabled/${app_name}"
         log_info "Enabled Nginx site: ${app_name}"
+    else
+        log_info "Nginx site already enabled: ${app_name}"
     fi
     
     # Test Nginx configuration
     if nginx -t &> /dev/null; then
-        systemctl reload nginx
-        log_info "Nginx configuration reloaded successfully"
+        log_info "Nginx configuration test passed"
+        # Try to reload/start Nginx
+        if systemctl is-active --quiet nginx; then
+            systemctl reload nginx
+            log_info "Nginx configuration reloaded successfully"
+        elif [[ "$port_80_in_use" == "false" ]]; then
+            if systemctl start nginx 2>/dev/null; then
+                log_info "Nginx service started successfully"
+            else
+                log_warn "Could not start Nginx service, but configuration is valid"
+                log_info "You may need to manually stop Docker nginx-proxy and start Nginx:"
+                log_info "  docker stop nginx-proxy nginx-proxy-acme"
+                log_info "  systemctl start nginx"
+            fi
+        else
+            log_warn "Port 80 is in use, cannot start Nginx"
+            log_info "Configuration is valid. Stop Docker nginx-proxy and start Nginx:"
+            log_info "  docker stop nginx-proxy nginx-proxy-acme"
+            log_info "  systemctl start nginx"
+        fi
     else
         log_error "Nginx configuration test failed"
         nginx -t
+        log_error "Please fix the configuration and try again"
         exit 1
     fi
 }
@@ -734,9 +807,12 @@ deploy_application() {
         exit 1
     }
     
-    local container_id=$(docker compose ps -q)
-    if [[ -n "$container_id" ]]; then
-        docker network connect "$nginx_network" "$container_id" 2>/dev/null || true
+    # Connect to nginx network if provided (for Docker nginx-proxy)
+    if [[ -n "$nginx_network" ]]; then
+        local container_id=$(docker compose ps -q)
+        if [[ -n "$container_id" ]]; then
+            docker network connect "$nginx_network" "$container_id" 2>/dev/null || true
+        fi
     fi
 }
 
@@ -759,6 +835,13 @@ main() {
     # Step 1: Server Setup
     setup_server
     
+    # Clean up Docker nginx-proxy if it exists (we use traditional Nginx server blocks)
+    log_info "Checking for existing Docker nginx-proxy containers..."
+    if docker ps --format "{{.Names}}" 2>/dev/null | grep -qE "^(nginx-proxy|nginx-proxy-acme)$"; then
+        log_info "Stopping Docker nginx-proxy containers (using traditional Nginx instead)..."
+        stop_docker_nginx_proxy || log_warn "Some Docker nginx-proxy containers may still be running"
+    fi
+    
     # Step 2: Application Configuration
     prompt_app_config
     
@@ -779,46 +862,51 @@ main() {
     # Clone repository
     clone_or_update_repo "$app_dir" "$REPO_URL" "$BRANCH"
     
-    # Check for Dockerfile
-    if [[ ! -f "$app_dir/Dockerfile" ]]; then
-        log_error "Dockerfile not found in repository"
+    # Check for Dockerfile (check in apps folder first, then root)
+    local dockerfile_path=""
+    local compose_dir=""
+    
+    if [[ -f "$app_dir/apps/$APP_NAME/Dockerfile" ]]; then
+        dockerfile_path="$app_dir/apps/$APP_NAME/Dockerfile"
+        compose_dir="$app_dir/apps/$APP_NAME"
+        log_info "Found Dockerfile in apps/$APP_NAME folder"
+    elif [[ -f "$app_dir/Dockerfile" ]]; then
+        dockerfile_path="$app_dir/Dockerfile"
+        compose_dir="$app_dir"
+        log_info "Found Dockerfile in repository root"
+    else
+        log_error "Dockerfile not found in repository (checked root and apps/$APP_NAME)"
         exit 1
     fi
     
-    # Create .env file
-    create_env_file "$app_dir"
+    # Create .env file in the same directory as docker-compose.yml
+    create_env_file "$compose_dir"
     
-    # Generate docker-compose.yml
-    generate_docker_compose "$app_dir" "$APP_NAME" "$IMAGE_NAME" "$DOMAIN_URL" "$APP_PORT" "$ACME_EMAIL"
+    # Generate docker-compose.yml in apps folder (or root if no apps folder)
+    generate_docker_compose "$compose_dir" "$APP_NAME" "$IMAGE_NAME" "$DOMAIN_URL" "$APP_PORT" "$ACME_EMAIL"
     
-    # Setup Nginx proxy (Docker container for SSL)
-    setup_nginx_proxy "$DEPLOY_DIR" "$ACME_EMAIL"
-    
-    # Get Nginx network name and update docker-compose.yml
-    local nginx_network=$(get_nginx_network_name)
-    sed -i "s|name: nginx_nginx-proxy-network|name: ${nginx_network}|" "$app_dir/docker-compose.yml"
-    
-    # Deploy application
-    deploy_application "$app_dir" "$APP_NAME" "$IMAGE_NAME" "$DOMAIN_URL" "$APP_PORT" "$nginx_network"
+    # Deploy application (no Docker nginx-proxy needed for traditional Nginx server blocks)
+    # Use compose_dir for docker compose operations
+    deploy_application "$compose_dir" "$APP_NAME" "$IMAGE_NAME" "$DOMAIN_URL" "$APP_PORT" ""
     
     # Get host port and setup Nginx server block
-    local host_port=$(cat "$app_dir/.host_port" 2>/dev/null || echo "$APP_PORT")
+    local host_port=$(cat "$compose_dir/.host_port" 2>/dev/null || echo "$APP_PORT")
     setup_nginx_server_block "$DOMAIN_URL" "$host_port" "$APP_NAME"
     
     # Success message
     echo ""
-    log_info "=========================================="
-    log_info "Deployment completed successfully!"
-    log_info "=========================================="
+log_info "=========================================="
+log_info "Deployment completed successfully!"
+log_info "=========================================="
     log_info "Application: $APP_NAME"
     log_info "Domain: https://$DOMAIN_URL"
     log_info "Image: $IMAGE_NAME:latest"
     log_info "Port: $APP_PORT"
-    log_info "Environment: $ENV"
-    log_info ""
+log_info "Environment: $ENV"
+log_info ""
     log_info "To view logs: docker logs $APP_NAME"
     log_info "To restart: docker restart $APP_NAME"
-    log_info "=========================================="
+log_info "=========================================="
 }
 
 # Run main function
