@@ -204,7 +204,7 @@ prompt_app_config() {
     
     echo ""
     log_info "Environment Variables"
-    log_info "You can override variables from env.example. Leave empty to skip."
+    log_info "You can override variables from .env.example. Leave empty to skip."
     log_info "Press Enter after each variable, or type 'done' to finish."
     echo ""
     
@@ -461,9 +461,9 @@ create_env_file() {
     
     log_info "Creating .env file..."
     
-    if [[ -f "$app_dir/env.example" ]]; then
-        cp "$app_dir/env.example" "$app_dir/.env"
-        log_info "Copied env.example to .env"
+    if [[ -f "$app_dir/.env.example" ]]; then
+        cp "$app_dir/.env.example" "$app_dir/.env"
+        log_info "Copied .env.example to .env"
         
         for key in "${!ENV_OVERRIDES[@]}"; do
             local value="${ENV_OVERRIDES[$key]}"
@@ -476,7 +476,7 @@ create_env_file() {
             fi
         done
     else
-        log_warn "No env.example found, creating empty .env"
+        log_warn "No .env.example found, creating empty .env"
         touch "$app_dir/.env"
         for key in "${!ENV_OVERRIDES[@]}"; do
             echo "${key}=${ENV_OVERRIDES[$key]}" >> "$app_dir/.env"
