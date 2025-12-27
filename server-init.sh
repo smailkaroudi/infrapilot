@@ -548,7 +548,9 @@ EOF
 
 find_available_port() {
     local port=8000
-    while netstat -tuln 2>/dev/null | grep -q ":$port " || ss -tuln 2>/dev/null | grep -q ":$port "; do
+    while netstat -tuln 2>/dev/null | grep -q ":$port " || \
+          ss -tuln 2>/dev/null | grep -q ":$port " || \
+          docker ps --format "{{.Ports}}" 2>/dev/null | grep -q ":$port->"; do
         port=$((port + 1))
         if [[ $port -gt 9999 ]]; then
             log_error "Could not find available port"
@@ -662,6 +664,13 @@ setup_nginx_server_block() {
         log_info "Installing Nginx..."
         apt-get update -qq
         apt-get install -y -qq nginx
+        systemctl enable nginx
+    fi
+    
+    # Ensure Nginx is running
+    if ! systemctl is-active --quiet nginx; then
+        log_info "Starting Nginx service..."
+        systemctl start nginx
     fi
     
     # Create server block configuration
@@ -691,9 +700,11 @@ NGINX_CONFIG
     # Test Nginx configuration
     if nginx -t &> /dev/null; then
         systemctl reload nginx
-        log_info "Nginx configuration reloaded"
+        log_info "Nginx configuration reloaded successfully"
     else
-        log_warn "Nginx configuration test failed, but continuing..."
+        log_error "Nginx configuration test failed"
+        nginx -t
+        exit 1
     fi
 }
 
