@@ -502,6 +502,9 @@ generate_docker_compose() {
     
     log_info "Generating docker-compose.yml..."
     
+    # Find an available port on host
+    local host_port=$(find_available_port)
+    
     cat > "$app_dir/docker-compose.yml" << EOF
 version: '3.8'
 
@@ -513,6 +516,8 @@ services:
     image: ${image_name}:latest
     container_name: ${app_name}
     restart: unless-stopped
+    ports:
+      - "${host_port}:${app_port}"
     env_file:
       - .env
     environment:
@@ -535,7 +540,22 @@ networks:
     name: nginx_nginx-proxy-network
 EOF
     
-    log_info "docker-compose.yml generated"
+    # Store host port for Nginx config
+    echo "$host_port" > "$app_dir/.host_port"
+    
+    log_info "docker-compose.yml generated (host port: $host_port)"
+}
+
+find_available_port() {
+    local port=8000
+    while netstat -tuln 2>/dev/null | grep -q ":$port " || ss -tuln 2>/dev/null | grep -q ":$port "; do
+        port=$((port + 1))
+        if [[ $port -gt 9999 ]]; then
+            log_error "Could not find available port"
+            exit 1
+        fi
+    done
+    echo "$port"
 }
 
 # ============================================================================
@@ -630,6 +650,53 @@ get_nginx_network_name() {
     echo "$network_name"
 }
 
+setup_nginx_server_block() {
+    local domain_url="$1"
+    local host_port="$2"
+    local app_name="$3"
+    
+    log_info "Creating Nginx server block for $domain_url..."
+    
+    # Install Nginx if not installed
+    if ! command -v nginx &> /dev/null; then
+        log_info "Installing Nginx..."
+        apt-get update -qq
+        apt-get install -y -qq nginx
+    fi
+    
+    # Create server block configuration
+    local config_file="/etc/nginx/sites-available/${app_name}"
+    
+    cat > "$config_file" << NGINX_CONFIG
+server {
+    listen 80;
+    server_name ${domain_url};
+
+    location / {
+        proxy_pass http://127.0.0.1:${host_port}/;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }
+}
+NGINX_CONFIG
+    
+    # Enable site
+    if [[ ! -L "/etc/nginx/sites-enabled/${app_name}" ]]; then
+        ln -s "$config_file" "/etc/nginx/sites-enabled/${app_name}"
+        log_info "Enabled Nginx site: ${app_name}"
+    fi
+    
+    # Test Nginx configuration
+    if nginx -t &> /dev/null; then
+        systemctl reload nginx
+        log_info "Nginx configuration reloaded"
+    else
+        log_warn "Nginx configuration test failed, but continuing..."
+    fi
+}
+
 # ============================================================================
 # DEPLOYMENT FUNCTIONS
 # ============================================================================
@@ -713,7 +780,7 @@ main() {
     # Generate docker-compose.yml
     generate_docker_compose "$app_dir" "$APP_NAME" "$IMAGE_NAME" "$DOMAIN_URL" "$APP_PORT" "$ACME_EMAIL"
     
-    # Setup Nginx proxy
+    # Setup Nginx proxy (Docker container for SSL)
     setup_nginx_proxy "$DEPLOY_DIR" "$ACME_EMAIL"
     
     # Get Nginx network name and update docker-compose.yml
@@ -722,6 +789,10 @@ main() {
     
     # Deploy application
     deploy_application "$app_dir" "$APP_NAME" "$IMAGE_NAME" "$DOMAIN_URL" "$APP_PORT" "$nginx_network"
+    
+    # Get host port and setup Nginx server block
+    local host_port=$(cat "$app_dir/.host_port" 2>/dev/null || echo "$APP_PORT")
+    setup_nginx_server_block "$DOMAIN_URL" "$host_port" "$APP_NAME"
     
     # Success message
     echo ""
