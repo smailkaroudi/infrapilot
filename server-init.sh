@@ -131,8 +131,7 @@ prompt_git_credentials() {
 }
 
 prompt_app_config() {
-    log_info "Step 2/3: Application Configuration"
-    log_info "Deploy one application at a time. Run this script again for additional apps."
+    log_info "Application Configuration"
     echo ""
     
     prompt_input "App Name: " "" false "APP_NAME"
@@ -824,6 +823,75 @@ NGINX_CONFIG
 # DEPLOYMENT FUNCTIONS
 # ============================================================================
 
+deploy_single_app() {
+    # Step 2: Application Configuration
+    prompt_app_config
+    
+    # Step 3: Deployment
+    log_info "Deploying application: $APP_NAME..."
+    echo ""
+    
+    # Configure Git
+    configure_git
+    
+    # Setup directories
+    log_info "Setting up deployment directory: $DEPLOY_DIR"
+    mkdir -p "$DEPLOY_DIR"
+    
+    local app_dir="$DEPLOY_DIR/apps/$APP_NAME"
+    mkdir -p "$app_dir"
+    
+    # Clone repository
+    clone_or_update_repo "$app_dir" "$REPO_URL" "$BRANCH"
+    
+    # Check for Dockerfile (check in apps folder first, then root)
+    local dockerfile_path=""
+    local compose_dir=""
+    
+    if [[ -f "$app_dir/apps/$APP_NAME/Dockerfile" ]]; then
+        dockerfile_path="$app_dir/apps/$APP_NAME/Dockerfile"
+        compose_dir="$app_dir/apps/$APP_NAME"
+        log_info "Found Dockerfile in apps/$APP_NAME folder"
+    elif [[ -f "$app_dir/Dockerfile" ]]; then
+        dockerfile_path="$app_dir/Dockerfile"
+        compose_dir="$app_dir"
+        log_info "Found Dockerfile in repository root"
+    else
+        log_error "Dockerfile not found in repository (checked root and apps/$APP_NAME)"
+        return 1
+    fi
+    
+    # Create .env file in the same directory as docker-compose.yml
+    create_env_file "$compose_dir"
+    
+    # Generate docker-compose.yml in apps folder (or root if no apps folder)
+    generate_docker_compose "$compose_dir" "$APP_NAME" "$IMAGE_NAME" "$DOMAIN_URL" "$APP_PORT" "$ACME_EMAIL"
+    
+    # Deploy application (no Docker nginx-proxy needed for traditional Nginx server blocks)
+    # Use compose_dir for docker compose operations
+    deploy_application "$compose_dir" "$APP_NAME" "$IMAGE_NAME" "$DOMAIN_URL" "$APP_PORT" ""
+    
+    # Get host port and setup Nginx server block
+    local host_port=$(cat "$compose_dir/.host_port" 2>/dev/null || echo "$APP_PORT")
+    setup_nginx_server_block "$DOMAIN_URL" "$host_port" "$APP_NAME"
+    
+    # Success message
+    echo ""
+    log_info "=========================================="
+    log_info "Deployment completed successfully!"
+    log_info "=========================================="
+    log_info "Application: $APP_NAME"
+    log_info "Domain: https://$DOMAIN_URL"
+    log_info "Image: $IMAGE_NAME:latest"
+    log_info "Port: $APP_PORT"
+    log_info "Environment: $ENV"
+    log_info ""
+    log_info "To view logs: docker logs $APP_NAME"
+    log_info "To restart: docker restart $APP_NAME"
+    log_info "=========================================="
+    echo ""
+}
+
 deploy_application() {
     local app_dir="$1"
     local app_name="$2"
@@ -859,11 +927,32 @@ deploy_application() {
 # MAIN EXECUTION
 # ============================================================================
 
+clear_app_variables() {
+    # Clear app-specific variables for next deployment
+    APP_NAME=""
+    REPO_URL=""
+    BRANCH=""
+    DOMAIN_URL=""
+    IMAGE_NAME=""
+    APP_PORT=""
+    GIT_TOKEN=""
+    GIT_USERNAME=""
+    GIT_PASSWORD=""
+    # Clear associative arrays
+    for key in "${!ENV_OVERRIDES[@]}"; do
+        unset ENV_OVERRIDES["$key"]
+    done
+    for key in "${!DOCKER_ENV_VARS[@]}"; do
+        unset DOCKER_ENV_VARS["$key"]
+    done
+}
+
 main() {
     # Header
     echo ""
     log_info "=========================================="
     log_info "Server Setup & Deployment System"
+    log_info "Multi-App Deployment Mode"
     log_info "=========================================="
     echo ""
     
@@ -871,7 +960,7 @@ main() {
     check_root
     check_os
     
-    # Step 1: Server Setup
+    # Step 1: Server Setup (only once)
     setup_server
     
     # Clean up Docker nginx-proxy if it exists (we use traditional Nginx server blocks)
@@ -881,71 +970,46 @@ main() {
         stop_docker_nginx_proxy || log_warn "Some Docker nginx-proxy containers may still be running"
     fi
     
-    # Step 2: Application Configuration
-    prompt_app_config
+    # Multi-app deployment loop
+    local app_count=0
+    while true; do
+        app_count=$((app_count + 1))
+        echo ""
+        log_info "=========================================="
+        log_info "Deploying Application #${app_count}"
+        log_info "=========================================="
+        echo ""
+        
+        # Deploy single app
+        if ! deploy_single_app; then
+            log_error "Failed to deploy application #${app_count}"
+            read -p "Continue with next app? [y/N]: " continue_choice < /dev/tty
+            if [[ ! "$continue_choice" =~ ^[Yy]$ ]]; then
+                break
+            fi
+        fi
+        
+        # Ask if user wants to deploy another app
+        echo ""
+        read -p "Deploy another application? (yes/no/done): " deploy_more < /dev/tty
+        if [[ "$deploy_more" =~ ^[Dd][Oo][Nn][Ee]$ ]] || [[ "$deploy_more" =~ ^[Nn][Oo]$ ]] || [[ -z "$deploy_more" ]]; then
+            break
+        fi
+        
+        # Clear variables for next app
+        clear_app_variables
+    done
     
-    # Step 3: Deployment
-    log_info "Step 3/3: Deploying application..."
+    # Final summary
     echo ""
-    
-    # Configure Git
-    configure_git
-    
-    # Setup directories
-    log_info "Setting up deployment directory: $DEPLOY_DIR"
-    mkdir -p "$DEPLOY_DIR"
-    
-    local app_dir="$DEPLOY_DIR/apps/$APP_NAME"
-    mkdir -p "$app_dir"
-    
-    # Clone repository
-    clone_or_update_repo "$app_dir" "$REPO_URL" "$BRANCH"
-    
-    # Check for Dockerfile (check in apps folder first, then root)
-    local dockerfile_path=""
-    local compose_dir=""
-    
-    if [[ -f "$app_dir/apps/$APP_NAME/Dockerfile" ]]; then
-        dockerfile_path="$app_dir/apps/$APP_NAME/Dockerfile"
-        compose_dir="$app_dir/apps/$APP_NAME"
-        log_info "Found Dockerfile in apps/$APP_NAME folder"
-    elif [[ -f "$app_dir/Dockerfile" ]]; then
-        dockerfile_path="$app_dir/Dockerfile"
-        compose_dir="$app_dir"
-        log_info "Found Dockerfile in repository root"
-    else
-        log_error "Dockerfile not found in repository (checked root and apps/$APP_NAME)"
-        exit 1
-    fi
-    
-    # Create .env file in the same directory as docker-compose.yml
-    create_env_file "$compose_dir"
-    
-    # Generate docker-compose.yml in apps folder (or root if no apps folder)
-    generate_docker_compose "$compose_dir" "$APP_NAME" "$IMAGE_NAME" "$DOMAIN_URL" "$APP_PORT" "$ACME_EMAIL"
-    
-    # Deploy application (no Docker nginx-proxy needed for traditional Nginx server blocks)
-    # Use compose_dir for docker compose operations
-    deploy_application "$compose_dir" "$APP_NAME" "$IMAGE_NAME" "$DOMAIN_URL" "$APP_PORT" ""
-    
-    # Get host port and setup Nginx server block
-    local host_port=$(cat "$compose_dir/.host_port" 2>/dev/null || echo "$APP_PORT")
-    setup_nginx_server_block "$DOMAIN_URL" "$host_port" "$APP_NAME"
-    
-    # Success message
-    echo ""
-log_info "=========================================="
-log_info "Deployment completed successfully!"
-log_info "=========================================="
-    log_info "Application: $APP_NAME"
-    log_info "Domain: https://$DOMAIN_URL"
-    log_info "Image: $IMAGE_NAME:latest"
-    log_info "Port: $APP_PORT"
-log_info "Environment: $ENV"
-log_info ""
-    log_info "To view logs: docker logs $APP_NAME"
-    log_info "To restart: docker restart $APP_NAME"
-log_info "=========================================="
+    log_info "=========================================="
+    log_info "All Deployments Completed!"
+    log_info "=========================================="
+    log_info "Total applications deployed: $app_count"
+    log_info ""
+    log_info "To view all containers: docker ps"
+    log_info "To view Nginx sites: ls -la /etc/nginx/sites-enabled/"
+    log_info "=========================================="
 }
 
 # Run main function
