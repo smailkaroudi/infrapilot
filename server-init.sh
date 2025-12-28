@@ -27,6 +27,7 @@ GIT_TOKEN=""
 GIT_USERNAME=""
 GIT_PASSWORD=""
 declare -A ENV_OVERRIDES
+declare -A DOCKER_ENV_VARS
 
 # ============================================================================
 # UTILITY FUNCTIONS
@@ -224,6 +225,28 @@ fi
     done
     
     echo ""
+    log_info "Docker Environment Variables"
+    log_info "Add environment variables to pass directly to Docker container (e.g., WEB_DOCUMENT_ROOT=/app/public)"
+    log_info "These will be added to docker-compose.yml environment section."
+    log_info "Press Enter after each variable, or type 'done' to finish."
+    echo ""
+    
+    while true; do
+        read -p "Docker environment variable (KEY=VALUE or 'done' to finish): " docker_env_var < /dev/tty
+        if [[ "$docker_env_var" == "done" ]] || [[ -z "$docker_env_var" ]]; then
+            break
+        fi
+        if [[ "$docker_env_var" == *"="* ]]; then
+            key="${docker_env_var%%=*}"
+            value="${docker_env_var#*=}"
+            DOCKER_ENV_VARS["$key"]="$value"
+            log_info "  Added: $key=$value"
+        else
+            log_warn "Invalid format. Use KEY=VALUE"
+        fi
+    done
+    
+    echo ""
     log_info "Configuration Summary:"
     log_info "  App Name: $APP_NAME"
     log_info "  Repository: $REPO_URL"
@@ -237,6 +260,12 @@ fi
         log_info "  Environment Overrides:"
         for key in "${!ENV_OVERRIDES[@]}"; do
             log_info "    $key=${ENV_OVERRIDES[$key]}"
+        done
+    fi
+    if [[ ${#DOCKER_ENV_VARS[@]} -gt 0 ]]; then
+        log_info "  Docker Environment Variables:"
+        for key in "${!DOCKER_ENV_VARS[@]}"; do
+            log_info "    $key=${DOCKER_ENV_VARS[$key]}"
         done
     fi
     
@@ -505,26 +534,36 @@ generate_docker_compose() {
     # Find an available port on host
     local host_port=$(find_available_port)
     
-    cat > "$compose_dir/docker-compose.yml" << EOF
-services:
-  ${app_name}:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    image: ${image_name}:latest
-    container_name: ${app_name}
-    restart: unless-stopped
-    ports:
-      - "${host_port}:${app_port}"
-    env_file:
-      - .env
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:${app_port}/health || wget --no-verbose --tries=1 --spider http://localhost:${app_port}/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-      start_period: 40s
-EOF
+    # Build docker-compose.yml content
+    {
+        echo "services:"
+        echo "  ${app_name}:"
+        echo "    build:"
+        echo "      context: ."
+        echo "      dockerfile: Dockerfile"
+        echo "    image: ${image_name}:latest"
+        echo "    container_name: ${app_name}"
+        echo "    restart: unless-stopped"
+        echo "    ports:"
+        echo "      - \"${host_port}:${app_port}\""
+        echo "    env_file:"
+        echo "      - .env"
+        
+        # Add environment section if Docker env vars exist
+        if [[ ${#DOCKER_ENV_VARS[@]} -gt 0 ]]; then
+            echo "    environment:"
+            for key in "${!DOCKER_ENV_VARS[@]}"; do
+                echo "      - ${key}=${DOCKER_ENV_VARS[$key]}"
+            done
+        fi
+        
+        echo "    healthcheck:"
+        echo "      test: [\"CMD-SHELL\", \"curl -f http://localhost:${app_port}/health || wget --no-verbose --tries=1 --spider http://localhost:${app_port}/health || exit 1\"]"
+        echo "      interval: 30s"
+        echo "      timeout: 10s"
+        echo "      retries: 3"
+        echo "      start_period: 40s"
+    } > "$compose_dir/docker-compose.yml"
     
     # Store host port for Nginx config
     echo "$host_port" > "$compose_dir/.host_port"
