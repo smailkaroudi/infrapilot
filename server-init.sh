@@ -261,7 +261,7 @@ fi
             log_info "    $key=${ENV_OVERRIDES[$key]}"
         done
     fi
-    if [[ ${#DOCKER_ENV_VARS[@]:-0} -gt 0 ]]; then
+    if [[ "${DOCKER_ENV_VARS[@]+x}" == "x" ]] && [[ ${#DOCKER_ENV_VARS[@]} -gt 0 ]]; then
         log_info "  Docker Environment Variables:"
         for key in "${!DOCKER_ENV_VARS[@]}"; do
             log_info "    $key=${DOCKER_ENV_VARS[$key]}"
@@ -549,7 +549,7 @@ generate_docker_compose() {
         echo "      - .env"
         
         # Add environment section if Docker env vars exist
-        if [[ ${#DOCKER_ENV_VARS[@]:-0} -gt 0 ]]; then
+        if [[ "${DOCKER_ENV_VARS[@]+x}" == "x" ]] && [[ ${#DOCKER_ENV_VARS[@]} -gt 0 ]]; then
             echo "    environment:"
             for key in "${!DOCKER_ENV_VARS[@]}"; do
                 echo "      - ${key}=${DOCKER_ENV_VARS[$key]}"
@@ -939,12 +939,12 @@ clear_app_variables() {
     GIT_USERNAME=""
     GIT_PASSWORD=""
     # Clear associative arrays safely
-    if [[ ${#ENV_OVERRIDES[@]:-0} -gt 0 ]]; then
+    if [[ "${ENV_OVERRIDES[@]+x}" == "x" ]] && [[ ${#ENV_OVERRIDES[@]} -gt 0 ]]; then
         for key in "${!ENV_OVERRIDES[@]}"; do
             unset ENV_OVERRIDES["$key"]
         done
     fi
-    if [[ ${#DOCKER_ENV_VARS[@]:-0} -gt 0 ]]; then
+    if [[ "${DOCKER_ENV_VARS[@]+x}" == "x" ]] && [[ ${#DOCKER_ENV_VARS[@]} -gt 0 ]]; then
         for key in "${!DOCKER_ENV_VARS[@]}"; do
             unset DOCKER_ENV_VARS["$key"]
         done
