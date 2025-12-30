@@ -21,6 +21,7 @@ APP_NAME=""
 REPO_URL=""
 BRANCH=""
 DOMAIN_URL=""
+APP_PATH=""
 IMAGE_NAME=""
 APP_PORT=""
 GIT_TOKEN=""
@@ -162,7 +163,7 @@ prompt_app_config() {
     
     prompt_input "Branch: " "main" false "BRANCH"
     
-    prompt_input "Domain URL (e.g., app.example.com): " "" false "DOMAIN_URL"
+    prompt_input "Domain URL (e.g., app.example.com or IP address): " "" false "DOMAIN_URL"
     [[ -z "$DOMAIN_URL" ]] && { log_error "Domain URL is required"; exit 1; }
     
     # Remove protocol and path if user included them
@@ -173,6 +174,13 @@ prompt_app_config() {
         log_warn "Domain URL should not include paths. Using only domain: ${DOMAIN_URL%%/*}"
         DOMAIN_URL="${DOMAIN_URL%%/*}"
     fi
+    
+    prompt_input "Deployment Path (e.g., /test, /api, or / for root): " "/" false "APP_PATH"
+    [[ -z "$APP_PATH" ]] && APP_PATH="/"
+    # Ensure path starts with /
+    [[ ! "$APP_PATH" =~ ^/ ]] && APP_PATH="/$APP_PATH"
+    # Ensure path ends with / for non-root paths (for proper proxy_pass)
+    [[ "$APP_PATH" != "/" ]] && [[ ! "$APP_PATH" =~ /$ ]] && APP_PATH="$APP_PATH/"
     
     prompt_input "Docker Image Name (e.g., myapp): " "$APP_NAME" false "IMAGE_NAME"
     [[ -z "$IMAGE_NAME" ]] && IMAGE_NAME="$APP_NAME"
@@ -251,6 +259,7 @@ fi
     log_info "  Repository: $REPO_URL"
     log_info "  Branch: $BRANCH"
     log_info "  Domain: $DOMAIN_URL"
+    log_info "  Path: $APP_PATH"
     log_info "  Image Name: $IMAGE_NAME"
     log_info "  Port: $APP_PORT"
     log_info "  Environment: $ENV"
@@ -521,53 +530,120 @@ create_env_file() {
 # ============================================================================
 
 generate_docker_compose() {
-    local compose_dir="$1"
+    local build_context="$1"
     local app_name="$2"
     local image_name="$3"
     local domain_url="$4"
     local app_port="$5"
     local acme_email="$6"
     
-    log_info "Generating docker-compose.yml in: $compose_dir"
+    local compose_file="/opt/deployment/app/docker-compose.yml"
+    local compose_dir="/opt/deployment/app"
+    
+    # Create directory if it doesn't exist
+    mkdir -p "$compose_dir"
+    
+    log_info "Adding service to docker-compose.yml in: $compose_dir"
     
     # Find an available port on host
     local host_port=$(find_available_port)
     
-    # Build docker-compose.yml content
-    {
-        echo "services:"
-        echo "  ${app_name}:"
-        echo "    build:"
-        echo "      context: ."
-        echo "      dockerfile: Dockerfile"
-        echo "    image: ${image_name}:latest"
-        echo "    container_name: ${app_name}"
-        echo "    restart: unless-stopped"
-        echo "    ports:"
-        echo "      - \"${host_port}:${app_port}\""
-        echo "    env_file:"
-        echo "      - .env"
-        
-        # Add environment section if Docker env vars exist
-        if [[ "${DOCKER_ENV_VARS[@]+x}" == "x" ]] && [[ ${#DOCKER_ENV_VARS[@]} -gt 0 ]]; then
-            echo "    environment:"
-            for key in "${!DOCKER_ENV_VARS[@]}"; do
-                echo "      - ${key}=${DOCKER_ENV_VARS[$key]}"
-            done
-        fi
-        
-        echo "    healthcheck:"
-        echo "      test: [\"CMD-SHELL\", \"curl -f http://localhost:${app_port}/health || wget --no-verbose --tries=1 --spider http://localhost:${app_port}/health || exit 1\"]"
-        echo "      interval: 30s"
-        echo "      timeout: 10s"
-        echo "      retries: 3"
-        echo "      start_period: 40s"
-    } > "$compose_dir/docker-compose.yml"
+    # Calculate relative path from compose_dir to build_context
+    local relative_context
+    relative_context=$(realpath --relative-to="$compose_dir" "$build_context" 2>/dev/null || echo "$build_context")
     
-    # Store host port for Nginx config
-    echo "$host_port" > "$compose_dir/.host_port"
+    # Check if service already exists
+    if [[ -f "$compose_file" ]] && grep -q "^  ${app_name}:" "$compose_file"; then
+        log_warn "Service ${app_name} already exists in docker-compose.yml. Removing old definition..."
+        # Remove existing service definition (from service name to next service at same indentation or end of file)
+        awk -v app="$app_name" '
+            BEGIN { in_service = 0 }
+            /^  [a-zA-Z0-9_-]+:/ {
+                if ($0 ~ "^  " app ":") {
+                    in_service = 1
+                    next
+                } else if (in_service) {
+                    in_service = 0
+                }
+            }
+            !in_service { print }
+        ' "$compose_file" > "$compose_file.tmp" && mv "$compose_file.tmp" "$compose_file"
+    fi
     
-    log_info "docker-compose.yml generated in $compose_dir (host port: $host_port)"
+    # Check if docker-compose.yml exists and has services section
+    local has_services=false
+    if [[ -f "$compose_file" ]] && grep -q "^services:" "$compose_file"; then
+        has_services=true
+    fi
+    
+    # Append or create service definition
+    if [[ "$has_services" == "true" ]]; then
+        # Append service to existing file
+        {
+            echo "  ${app_name}:"
+            echo "    build:"
+            echo "      context: ${relative_context}"
+            echo "      dockerfile: Dockerfile"
+            echo "    image: ${image_name}:latest"
+            echo "    container_name: ${app_name}"
+            echo "    restart: unless-stopped"
+            echo "    ports:"
+            echo "      - \"${host_port}:${app_port}\""
+            echo "    env_file:"
+            echo "      - ${relative_context}/.env"
+            
+            # Add environment section if Docker env vars exist
+            if [[ "${DOCKER_ENV_VARS[@]+x}" == "x" ]] && [[ ${#DOCKER_ENV_VARS[@]} -gt 0 ]]; then
+                echo "    environment:"
+                for key in "${!DOCKER_ENV_VARS[@]}"; do
+                    echo "      - ${key}=${DOCKER_ENV_VARS[$key]}"
+                done
+            fi
+            
+            echo "    healthcheck:"
+            echo "      test: [\"CMD-SHELL\", \"curl -f http://localhost:${app_port}/health || wget --no-verbose --tries=1 --spider http://localhost:${app_port}/health || exit 1\"]"
+            echo "      interval: 30s"
+            echo "      timeout: 10s"
+            echo "      retries: 3"
+            echo "      start_period: 40s"
+        } >> "$compose_file"
+    else
+        # Create new file with services section
+        {
+            echo "services:"
+            echo "  ${app_name}:"
+            echo "    build:"
+            echo "      context: ${relative_context}"
+            echo "      dockerfile: Dockerfile"
+            echo "    image: ${image_name}:latest"
+            echo "    container_name: ${app_name}"
+            echo "    restart: unless-stopped"
+            echo "    ports:"
+            echo "      - \"${host_port}:${app_port}\""
+            echo "    env_file:"
+            echo "      - ${relative_context}/.env"
+            
+            # Add environment section if Docker env vars exist
+            if [[ "${DOCKER_ENV_VARS[@]+x}" == "x" ]] && [[ ${#DOCKER_ENV_VARS[@]} -gt 0 ]]; then
+                echo "    environment:"
+                for key in "${!DOCKER_ENV_VARS[@]}"; do
+                    echo "      - ${key}=${DOCKER_ENV_VARS[$key]}"
+                done
+            fi
+            
+            echo "    healthcheck:"
+            echo "      test: [\"CMD-SHELL\", \"curl -f http://localhost:${app_port}/health || wget --no-verbose --tries=1 --spider http://localhost:${app_port}/health || exit 1\"]"
+            echo "      interval: 30s"
+            echo "      timeout: 10s"
+            echo "      retries: 3"
+            echo "      start_period: 40s"
+        } > "$compose_file"
+    fi
+    
+    # Store host port for Nginx config (per app, in app directory)
+    echo "$host_port" > "$build_context/.host_port"
+    
+    log_info "Service added to docker-compose.yml in $compose_dir (host port: $host_port)"
 }
 
 find_available_port() {
@@ -688,7 +764,7 @@ stop_docker_nginx_proxy() {
     # Try to stop via docker compose first (most reliable method)
     if [[ -d "$DEPLOY_DIR/nginx" ]] && [[ -f "$DEPLOY_DIR/nginx/docker-compose.yml" ]]; then
         log_info "Stopping Docker nginx-proxy via docker compose..."
-        cd "$DEPLOY_DIR/nginx"
+cd "$DEPLOY_DIR/nginx"
         docker compose down 2>/dev/null && containers_stopped=true
         cd - > /dev/null
     fi
@@ -725,8 +801,9 @@ setup_nginx_server_block() {
     local domain_url="$1"
     local host_port="$2"
     local app_name="$3"
+    local app_path="$4"
     
-    log_info "Creating Nginx server block for $domain_url..."
+    log_info "Creating Nginx location block for $domain_url$app_path..."
     
     # Stop Docker nginx-proxy if running (we're using traditional Nginx)
     stop_docker_nginx_proxy || log_warn "Docker nginx-proxy may still be using port 80"
@@ -760,33 +837,155 @@ setup_nginx_server_block() {
         log_info "Server block configuration will still be created"
     fi
     
-    # Create server block configuration (always create, even if Nginx can't start yet)
-    local config_file="/etc/nginx/sites-available/${app_name}"
+    # Use domain-based config file name (sanitized) so multiple apps on same domain share config
+    local safe_domain=$(echo "$domain_url" | sed 's/[^a-zA-Z0-9._-]/-/g')
+    local config_file="/etc/nginx/sites-available/${safe_domain}"
+    local enabled_link="/etc/nginx/sites-enabled/${safe_domain}"
     
-    log_info "Creating Nginx server block configuration: $config_file"
-    cat > "$config_file" << NGINX_CONFIG
-server {
-    listen 80;
-    server_name ${domain_url};
-
-    location / {
+    # Normalize app_path for location block (remove trailing slash except for root)
+    local location_path="$app_path"
+    if [[ "$location_path" != "/" ]] && [[ "$location_path" =~ /$ ]]; then
+        location_path="${location_path%/}"
+    fi
+    
+    # Check if server block already exists for this domain
+    if [[ -f "$config_file" ]] && grep -q "server_name ${domain_url}" "$config_file"; then
+        log_info "Server block already exists for $domain_url. Adding location block..."
+        
+        # Check if location already exists
+        if grep -q "location ${location_path}" "$config_file"; then
+            log_warn "Location ${location_path} already exists. Replacing it..."
+            # Remove existing location block (from "location" to next "location" or "}")
+            awk -v path="$location_path" '
+                BEGIN { in_location = 0; skip_until_next = 0 }
+                /^[[:space:]]*location[[:space:]]+.*\{/ {
+                    if ($0 ~ "location[[:space:]]+" path "[[:space:]]*\\{") {
+                        in_location = 1
+                        skip_until_next = 1
+                        next
+                    } else if (skip_until_next) {
+                        skip_until_next = 0
+                    }
+                }
+                /^[[:space:]]*\}/ {
+                    if (in_location) {
+                        in_location = 0
+                        skip_until_next = 0
+                        next
+                    }
+                }
+                !skip_until_next { print }
+            ' "$config_file" > "$config_file.tmp" && mv "$config_file.tmp" "$config_file"
+        fi
+        
+        # Create location block in temporary file
+        local temp_location="/tmp/nginx_location_$$.tmp"
+        cat > "$temp_location" << LOCATION_BLOCK
+    location ${location_path} {
         proxy_pass http://127.0.0.1:${host_port}/;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
     }
+LOCATION_BLOCK
+        
+        # If root path, add it at the end (before closing brace)
+        # Otherwise, add before root location or at the end
+        if [[ "$location_path" == "/" ]]; then
+            # Root path should be last - insert before closing brace
+            # Use awk to insert before the last closing brace
+            awk -v location_file="$temp_location" '
+                BEGIN { 
+                    while ((getline line < location_file) > 0) {
+                        location_block = location_block line "\n"
+                    }
+                    close(location_file)
+                }
+                /^}$/ && !inserted {
+                    printf "%s", location_block
+                    inserted = 1
+                }
+                { print }
+            ' "$config_file" > "$config_file.tmp" && mv "$config_file.tmp" "$config_file"
+        else
+            # Non-root path - add before root location if it exists, otherwise before closing brace
+            if grep -q "location / {" "$config_file"; then
+                # Insert before root location
+                awk -v location_file="$temp_location" '
+                    BEGIN { 
+                        while ((getline line < location_file) > 0) {
+                            location_block = location_block line "\n"
+                        }
+                        close(location_file)
+                    }
+                    /^[[:space:]]*location \/ \{/ && !inserted {
+                        printf "%s", location_block
+                        inserted = 1
+                    }
+                    { print }
+                ' "$config_file" > "$config_file.tmp" && mv "$config_file.tmp" "$config_file"
+            else
+                # Insert before closing brace
+                awk -v location_file="$temp_location" '
+                    BEGIN { 
+                        while ((getline line < location_file) > 0) {
+                            location_block = location_block line "\n"
+                        }
+                        close(location_file)
+                    }
+                    /^}$/ && !inserted {
+                        printf "%s", location_block
+                        inserted = 1
+                    }
+                    { print }
+                ' "$config_file" > "$config_file.tmp" && mv "$config_file.tmp" "$config_file"
+            fi
+        fi
+        
+        rm -f "$temp_location"
+    else
+        # Create new server block
+        log_info "Creating new Nginx server block configuration: $config_file"
+        
+        # Build location blocks - root path should be last
+        local location_blocks=""
+        if [[ "$location_path" == "/" ]]; then
+            location_blocks="    location / {
+        proxy_pass http://127.0.0.1:${host_port}/;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }"
+        else
+            location_blocks="    location ${location_path} {
+        proxy_pass http://127.0.0.1:${host_port}/;
+        proxy_set_header Host \$host;
+        proxy_set_header X-Real-IP \$remote_addr;
+        proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+    }"
+        fi
+        
+        cat > "$config_file" << NGINX_CONFIG
+server {
+    listen 80;
+    server_name ${domain_url};
+
+${location_blocks}
 }
 NGINX_CONFIG
+    fi
     
-    log_info "Server block configuration created"
+    log_info "Location block configuration updated"
     
-    # Enable site
-    if [[ ! -L "/etc/nginx/sites-enabled/${app_name}" ]]; then
-        ln -s "$config_file" "/etc/nginx/sites-enabled/${app_name}"
-        log_info "Enabled Nginx site: ${app_name}"
+    # Enable site (create symlink if it doesn't exist)
+    if [[ ! -L "$enabled_link" ]]; then
+        ln -s "$config_file" "$enabled_link"
+        log_info "Enabled Nginx site: ${safe_domain}"
     else
-        log_info "Nginx site already enabled: ${app_name}"
+        log_info "Nginx site already enabled: ${safe_domain}"
     fi
     
     # Test Nginx configuration
@@ -846,46 +1045,46 @@ deploy_single_app() {
     
     # Check for Dockerfile (check in apps folder first, then root)
     local dockerfile_path=""
-    local compose_dir=""
+    local build_context=""
     
     if [[ -f "$app_dir/apps/$APP_NAME/Dockerfile" ]]; then
         dockerfile_path="$app_dir/apps/$APP_NAME/Dockerfile"
-        compose_dir="$app_dir/apps/$APP_NAME"
+        build_context="$app_dir/apps/$APP_NAME"
         log_info "Found Dockerfile in apps/$APP_NAME folder"
     elif [[ -f "$app_dir/Dockerfile" ]]; then
         dockerfile_path="$app_dir/Dockerfile"
-        compose_dir="$app_dir"
+        build_context="$app_dir"
         log_info "Found Dockerfile in repository root"
     else
         log_error "Dockerfile not found in repository (checked root and apps/$APP_NAME)"
         return 1
     fi
     
-    # Create .env file in the same directory as docker-compose.yml
-    create_env_file "$compose_dir"
+    # Create .env file in the build context directory
+    create_env_file "$build_context"
     
-    # Generate docker-compose.yml in apps folder (or root if no apps folder)
-    generate_docker_compose "$compose_dir" "$APP_NAME" "$IMAGE_NAME" "$DOMAIN_URL" "$APP_PORT" "$ACME_EMAIL"
+    # Generate docker-compose.yml in /opt/deployment/app (adds service to shared file)
+    generate_docker_compose "$build_context" "$APP_NAME" "$IMAGE_NAME" "$DOMAIN_URL" "$APP_PORT" "$ACME_EMAIL"
     
-    # Deploy application (no Docker nginx-proxy needed for traditional Nginx server blocks)
-    # Use compose_dir for docker compose operations
+    # Deploy application using the centralized docker-compose.yml
+    local compose_dir="/opt/deployment/app"
     deploy_application "$compose_dir" "$APP_NAME" "$IMAGE_NAME" "$DOMAIN_URL" "$APP_PORT" ""
     
     # Get host port and setup Nginx server block
-    local host_port=$(cat "$compose_dir/.host_port" 2>/dev/null || echo "$APP_PORT")
-    setup_nginx_server_block "$DOMAIN_URL" "$host_port" "$APP_NAME"
+    local host_port=$(cat "$build_context/.host_port" 2>/dev/null || echo "$APP_PORT")
+    setup_nginx_server_block "$DOMAIN_URL" "$host_port" "$APP_NAME" "$APP_PATH"
     
     # Success message
     echo ""
-    log_info "=========================================="
-    log_info "Deployment completed successfully!"
-    log_info "=========================================="
+log_info "=========================================="
+log_info "Deployment completed successfully!"
+log_info "=========================================="
     log_info "Application: $APP_NAME"
     log_info "Domain: https://$DOMAIN_URL"
     log_info "Image: $IMAGE_NAME:latest"
     log_info "Port: $APP_PORT"
-    log_info "Environment: $ENV"
-    log_info ""
+log_info "Environment: $ENV"
+log_info ""
     log_info "To view logs: docker logs $APP_NAME"
     log_info "To restart: docker restart $APP_NAME"
     log_info "=========================================="
@@ -933,6 +1132,7 @@ clear_app_variables() {
     REPO_URL=""
     BRANCH=""
     DOMAIN_URL=""
+    APP_PATH=""
     IMAGE_NAME=""
     APP_PORT=""
     GIT_TOKEN=""
@@ -981,7 +1181,7 @@ main() {
         echo ""
         log_info "=========================================="
         log_info "Deploying Application #${app_count}"
-        log_info "=========================================="
+log_info "=========================================="
         echo ""
         
         # Deploy single app
